@@ -1,8 +1,0 @@
-Manifest-Version: 1.0
-Bundle-ManifestVersion: 2
-Bundle-Name: Encryption
-Bundle-SymbolicName: Encryption
-Bundle-Version: 1.0.0
-Bundle-ClassPath: Encryption.jar,
- lib/bcprov-jdk15-134.jar
-Bundle-Localization: plugin
