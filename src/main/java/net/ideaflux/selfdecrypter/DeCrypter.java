@@ -155,7 +155,8 @@ public class DeCrypter implements ActionListener {
 	protected JRadioButton singleFileOption = new JRadioButton("Create Encrypted File Only");
 	protected JComboBox AlgoSelectBox;
 
-	protected CountDownLatch latch;
+	protected CountDownLatch zipLatch;
+	protected CountDownLatch unzipLatch;
 
 
 	/**
@@ -845,6 +846,8 @@ public class DeCrypter implements ActionListener {
 		char[] passString;
 		SecureRandom secureRandom;
 		boolean isEncrSuccessful = true;
+		
+		zipLatch = new CountDownLatch(1);
 
 		encryptionAlgoName = (String) AlgoSelectBox.getSelectedItem();
 
@@ -919,14 +922,13 @@ public class DeCrypter implements ActionListener {
 				FileOutputStream fos = new FileOutputStream(fileName);
 				// bind file output to a jar output
 				JarOutputStream jos = new JarOutputStream(fos);
+				// commence reading from pis and writing to jos
+				javax.crypto.CipherOutputStream cos = new javax.crypto.CipherOutputStream(jos, c);
 				
 				// A PipedInputStream is created and connected to a PipedOutputStream that is feeding us the zipped data
 				// in this case we interpose a cipher into a PipedInputStream to encode the data as we write it.
 				PipedInputStream pis = new PipedInputStream();
 				PipedOutputStream pos = new PipedOutputStream(pis);
-				
-				// commence reading from pis and writing to jos
-				javax.crypto.CipherOutputStream cos = new javax.crypto.CipherOutputStream(jos, c);
 				)
 		
 			{
@@ -1023,16 +1025,17 @@ public class DeCrypter implements ActionListener {
 				cos.write(b, 0, i);
 				i = pis.read(b);
 			}
-			// flush all output streams TODO: may not be necessary after the try-with-resources change
-			cos.flush();
-			jos.flush();
-			fos.flush();
+			
+			// wait until the last file is completely written
+			zipLatch.await();
 
 			// close the last (data) Jar Entry
 			jos.closeEntry();
 		}
         catch (IOException e) {
-	        // TODO Auto-generated catch block
+	        e.printStackTrace();
+        }
+        catch (InterruptedException e) {
 	        e.printStackTrace();
         }
 
@@ -1072,7 +1075,6 @@ public class DeCrypter implements ActionListener {
 		char[] passString;
 		byte[] salt;
 		int count;
-		javax.crypto.CipherOutputStream dcos;
 
 		boolean isDecrSuccessful = true;
 
@@ -1080,12 +1082,11 @@ public class DeCrypter implements ActionListener {
 		passString = passField.getPassword();
 		pbeKeySpec = new javax.crypto.spec.PBEKeySpec(passString); // this has another constructor with (passwd,salt,count,strength)
 
-		latch = new CountDownLatch(1);
+		unzipLatch = new CountDownLatch(1);
 
 		try (	PipedInputStream dpis = new PipedInputStream();
-				PipedOutputStream dpos = new PipedOutputStream(dpis);
-				)
-		{
+				PipedOutputStream dpos = new PipedOutputStream(dpis);){
+			
 			// Now decrypt the same file (reverse the process)
 			InputStream fis = null;
 			JarInputStream jis = null;
@@ -1136,89 +1137,87 @@ public class DeCrypter implements ActionListener {
 			cNew = javax.crypto.Cipher.getInstance(encryptionAlgoName, "BC");
 			cNew.init(javax.crypto.Cipher.DECRYPT_MODE, key, PBEps);
 
-			dcos = new javax.crypto.CipherOutputStream(dpos, cNew);
-
-			final ZipInputStream zin = new ZipInputStream(dpis);
-
-			if (internalLoc) {
-				// We run the unzip operation in a separate thread from the encryption operation
-				// and pass in the dpis which will receive unencrypted data from the pipedOutputStream
-				Runnable runB = new Runnable() {
-
-					public void run() {
-						try {
-							unzipFiles(zin, dir);
+			try(	javax.crypto.CipherOutputStream dcos = new javax.crypto.CipherOutputStream(dpos, cNew);){
+				if (internalLoc) {
+					// We run the unzip operation in a separate thread from the encryption operation
+					// and pass in the dpis which will receive unencrypted data from the pipedOutputStream
+					Runnable runB = new Runnable() {
+	
+						public void run() {
+							try (ZipInputStream zin = new ZipInputStream(dpis);) {
+								unzipFiles(zin, dir);
+							}
+							catch (IOException e) {
+								e.printStackTrace();
+							}
 						}
-						catch (IOException e) {
-							e.printStackTrace();
+					};
+					Thread threadB = new Thread(runB, "threadB");
+					threadB.start();
+	
+					byte[] d = new byte[8];
+					int i = fis.read(d);
+					while (i != -1) {
+						if (noEntriesFound) {
+							JOptionPane.showMessageDialog(aframe, "Sorry, the data is invalid.  Did you type in the right passphrase?" + '\n' + "Try entering it again.");
+							isDecrSuccessful = false;
+							break;
 						}
+						// TODO: Race condition here, the 'if' above fails but before the rest of the 'else' below executes
+						// the pipe becomes closed.
+						else dcos.write(d, 0, i);
+						i = fis.read(d);
 					}
-				};
-				Thread threadB = new Thread(runB, "threadB");
-				threadB.start();
-
-				byte[] d = new byte[8];
-				int i = fis.read(d);
-				while (i != -1) {
-					if (noEntriesFound) {
-						JOptionPane.showMessageDialog(aframe, "Sorry, the data is invalid.  Did you type in the right passphrase?" + '\n' + "Try entering it again.");
-						isDecrSuccessful = false;
-						break;
-					}
-					// TODO: Race condition here, the 'if' above fails but before the rest of the 'else' below executes
-					// the pipe becomes closed.
-					else dcos.write(d, 0, i);
-					i = fis.read(d);
 				}
+				else {
+					// position the stream at the beginning of a jar entry
+					JarEntry inJarEntry = jis.getNextJarEntry();
+					// System.out.println("EntryName: " + inJarEntry.getName());
+	
+					// skip for now every entry until you get to data entry
+					while (!inJarEntry.getName().equalsIgnoreCase(dataFileName)) {
+						inJarEntry = jis.getNextJarEntry();
+						// System.out.println("Next EntryName: " + inJarEntry.getName());
+					}
+	
+					// We run the unzip operation in a separate thread from the encryption operation
+					// and pass in the dpis which will receive unencrypted data from the pipedOutputStream
+					// Open the ZIP file
+					Runnable runB = new Runnable() {
+	
+						public void run() {
+							try (ZipInputStream zin = new ZipInputStream(dpis);){
+								unzipFiles(zin, dir);
+							}
+							catch (IOException e) {
+								e.printStackTrace();
+							}
+						}
+					};
+					Thread threadB = new Thread(runB, "threadB");
+					threadB.start();
+	
+					byte[] d = new byte[8];
+					int i = jis.read(d);
+					while (i != -1) {
+						if (noEntriesFound) {
+							JOptionPane.showMessageDialog(aframe, "Sorry, the data is invalid.  Did you type in the right passphrase?" + '\n' + "Try entering it again.");
+							isDecrSuccessful = false;
+							break;
+						}
+						// TODO: Race condition here, the 'if' above fails but before the rest of the 'else' below executes
+						// the pipe becomes closed.
+						else dcos.write(d, 0, i);
+						i = jis.read(d);
+					}
+				}
+	
+				dcos.flush();
+				
+				unzipLatch.await(); // wait until zipped output stream finishes writing
 			}
-			else {
-				// position the stream at the beginning of a jar entry
-				JarEntry inJarEntry = jis.getNextJarEntry();
-				// System.out.println("EntryName: " + inJarEntry.getName());
-
-				// skip for now every entry until you get to data entry
-				while (!inJarEntry.getName().equalsIgnoreCase(dataFileName)) {
-					inJarEntry = jis.getNextJarEntry();
-					// System.out.println("Next EntryName: " + inJarEntry.getName());
-				}
-
-				// We run the unzip operation in a separate thread from the encryption operation
-				// and pass in the dpis which will receive unencrypted data from the pipedOutputStream
-				// Open the ZIP file
-				Runnable runB = new Runnable() {
-
-					public void run() {
-						try {
-							unzipFiles(zin, dir);
-						}
-						catch (IOException e) {
-							e.printStackTrace();
-						}
-					}
-				};
-				Thread threadB = new Thread(runB, "threadB");
-				threadB.start();
-
-				byte[] d = new byte[8];
-				int i = jis.read(d);
-				while (i != -1) {
-					if (noEntriesFound) {
-						JOptionPane.showMessageDialog(aframe, "Sorry, the data is invalid.  Did you type in the right passphrase?" + '\n' + "Try entering it again.");
-						isDecrSuccessful = false;
-						break;
-					}
-					// TODO: Race condition here, the 'if' above fails but before the rest of the 'else' below executes
-					// the pipe becomes closed.
-					else dcos.write(d, 0, i);
-					i = jis.read(d);
-				}
-			}
-
-			dcos.flush();
 
 			// doFinal() resets the cipher to its original state (but not necessary here, produces an error instead)
-
-			latch.await(); // wait until zipped output stream finishes writing
 
 			// while(!unzipComplete) { // wait for the unzipping thread to complete its operation
 			// try { // otherwise this (main) thread quits and breaks the pipedOutputStream connection
@@ -1372,6 +1371,9 @@ public class DeCrypter implements ActionListener {
 			System.out.println("Zipping files failed inside zipFiles method");
 			System.err.println(e.getMessage());
 		}
+		finally {
+		  zipLatch.countDown();
+		}
 		return result;
 	}
 
@@ -1393,7 +1395,7 @@ public class DeCrypter implements ActionListener {
 				try(FileInputStream in = new FileInputStream(file);) {
 				// Add ZIP entry to output stream.
 				zout.putNextEntry(new ZipEntry(relativePath + '/' + fileName));
-				// System.out.println("Added zip entry: " + relativePath + '/' + file.getName());
+				 System.out.println("Added zip entry: " + relativePath + '/' + file.getName());
 
 				// Transfer bytes from the file to the ZIP file
 				int len;
@@ -1413,6 +1415,17 @@ public class DeCrypter implements ActionListener {
 			}
 
 			else { // recursively call ourselves on each 'file' inside this directory
+				// first add the directory to zip
+				ZipEntry dirEntry = new ZipEntry(relativePath + '/' + fileName + '/');
+				System.out.println("Added zip entry directory: " + relativePath + '/' + fileName + '/'); // the final '/' indicates that it's a directory!
+				try {
+	                zout.putNextEntry(dirEntry);
+	                zout.closeEntry();
+                }
+                catch (IOException e) {
+	                e.printStackTrace();
+                }
+				
 				File[] files = file.listFiles();
 				for (int i = 0; i < files.length; i++) {
 					zipHelperRoutine(files[i], files[i].getName(), zout, buf, relativePath + '/' + fileName);
@@ -1492,7 +1505,7 @@ public class DeCrypter implements ActionListener {
 					System.out.println("Added jar entry: " + relativePath + '/' + file.getName());
 	
 					// Create a buffer for reading the files
-					byte[] buf = new byte[1024];
+					byte[] buf = new byte[4096];
 	
 					// Transfer bytes from the file to the JAR file
 					int len;
@@ -1540,27 +1553,36 @@ public class DeCrypter implements ActionListener {
 	 */
 	private void unzipFiles(ZipInputStream zin, File dir) throws IOException {
 		// Create a buffer for reading the files
-		byte[] buf = new byte[1024];
+		byte[] buf = new byte[4096];
 		int countEntries = 0;
 
 		try {
 			// Get the first entry
 			ZipEntry entry;
-			entry = zin.getNextEntry();
-			while (entry != null) {
+			// From JavaDocs: Open the next entry from the zip archive, and return its description.
+			// If the previous entry wasn't closed, this method will close it.
+			while ((entry = zin.getNextEntry())!=null) {
+//				System.out.println("unzipFiles() - Unzipping: " + entry.getName() + "   with size: " + entry.getSize());
 				countEntries++;
-				File saveMe = new File(dir.getAbsolutePath() + File.separator + entry.getName()); // get a file reference
-				saveMe.getParentFile().mkdirs(); // make any necessary directories
-				try(	// Open file for output
-						FileOutputStream out = new FileOutputStream(saveMe);) {
-					
-					// Transfer bytes from the ZIP file to the output file
-					int len;
-					while ((len = zin.read(buf)) > 0) {
-						out.write(buf, 0, len);
+				String fileToWrite = entry.getName().replace("/", File.separator);
+				File saveMe = new File(dir.getAbsolutePath() + File.separator + fileToWrite); // get a file reference
+				
+				if(entry.isDirectory()) {
+					saveMe.mkdirs();
+				}
+				else {
+					saveMe.getParentFile().mkdirs(); // make any necessary directories
+//					System.out.println("unzipFiles() - trying to unzip to: " + saveMe.getAbsolutePath());
+					try(	// Open file for output
+							FileOutputStream out = new FileOutputStream(saveMe);) {
+						
+						// Transfer bytes from the ZIP file to the output file
+						int len;
+						while ((len = zin.read(buf)) > 0) {
+							out.write(buf, 0, len);
+						}
 					}
 				}
-				entry = zin.getNextEntry();
 			}
 		}
 		catch (IOException e) {
@@ -1568,7 +1590,7 @@ public class DeCrypter implements ActionListener {
 			e.printStackTrace();
 		}
 		// if(!unzipComplete) unzipComplete=true;
-		latch.countDown();
+		unzipLatch.countDown();
 		if (countEntries == 0) noEntriesFound = true;
 	}
 
