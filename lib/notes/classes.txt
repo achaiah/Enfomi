@@ -1,6 +1,0 @@
-javax.crypto.spec.PBEKeySpec
-javax.crypto.spec.PBEParameterSpec
-javax.crypto.SecretKey
-javax.crypto.Cipher
-javax.crypto.CipherOutputStream
-org.bouncycastle.jce.provider.BouncyCastleProvider
