@@ -89,7 +89,7 @@ import javax.swing.SpringLayout;
  */
 public class DeCrypter implements ActionListener {
 
-	public static String versionNumberToShow = "v1.3";
+	public static String versionNumberToShow = "v1.3.1";
 
 	// Create a file chooser
 	protected final JFileChooser fc = new JFileChooser();
@@ -700,6 +700,10 @@ public class DeCrypter implements ActionListener {
 				JOptionPane.showMessageDialog(aframe, "Please type in a passphrase.");
 			else if (dir == null)
 				JOptionPane.showMessageDialog(aframe, "Please select a directory for the encrypted file.");
+			else if (dir.exists()) {
+				int result = JOptionPane.showConfirmDialog(aframe, dir.getName() + " file already exists. Are you sure you want to overwrite it?", "File Exists", JOptionPane.YES_NO_OPTION);
+				if (result == JOptionPane.YES_OPTION) doCryptography();
+			}
 			else doCryptography();
 		}
 		else if (e.getSource() == decryptResultButton) { // happens when an encrypted data archive is already present
