@@ -3,7 +3,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>net.ideaflux.enfomi</groupId>
 	<artifactId>Enfomi</artifactId>
-	<version>1.3</version>
+	<version>1.3.1</version>
 	<name>Enfomi</name>
 	<description>A self-decrypting java archiver</description>
 	<packaging>jar</packaging>

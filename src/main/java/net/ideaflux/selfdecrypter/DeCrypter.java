@@ -448,7 +448,7 @@ public class DeCrypter implements ActionListener {
 		
 		// Create the combo box, select item at index 13.
 		AlgoSelectBox = new JComboBox(AlgoNames);
-		AlgoSelectBox.setSelectedIndex(13); // Indices start at 0
+		AlgoSelectBox.setSelectedIndex(6); // Indices start at 0
 		AlgoSelectBox.setSize(new Dimension(200, 50));
 
 		optionsPanel.setLayout(optionsLayout); // add springLayout
